@@ -15,13 +15,11 @@
 // ni dans les logs : l'adresse du flux n'y apparaît jamais.
 
 import Parser from "rss-parser";
-import atproto from "@atproto/api";
+import { AtpAgent, RichText } from "@atproto/api";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fetchWithAnubis } from "./anubis.mjs";
 
-const { RichText } = atproto;
-const Agent = atproto.AtpAgent ?? atproto.BskyAgent;
 
 // ---------- Configuration ----------
 const FEED_URL = process.env.SEENTHIS_FEED_URL;
@@ -218,7 +216,7 @@ async function main() {
     if (!BSKY_IDENTIFIER || !BSKY_APP_PASSWORD) {
       throw new Error("BSKY_IDENTIFIER et BSKY_APP_PASSWORD doivent être définis.");
     }
-    agent = new Agent({ service: "https://bsky.social" });
+    agent = new AtpAgent({ service: process.env.BSKY_SERVICE ?? "https://bsky.social" });
     await agent.login({ identifier: BSKY_IDENTIFIER, password: BSKY_APP_PASSWORD });
   }
 
