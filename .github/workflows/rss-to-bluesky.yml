@@ -21,22 +21,32 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15 # le calcul demandé par Anubis peut prendre quelques minutes
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
+
+      # Cookie délivré par Anubis après le calcul : le réutiliser évite de refaire
+      # le calcul à chaque passage (s'il reste valable). Il n'est PAS versionné dans le dépôt.
+      - name: Restaurer le cookie Anubis
+        uses: actions/cache@v4
+        with:
+          path: .cache/anubis-cookies.json
+          key: anubis-cookie-${{ github.run_id }}
+          restore-keys: anubis-cookie-
 
       - name: Publier les nouveaux items
         env:
           SEENTHIS_FEED_URL: ${{ secrets.SEENTHIS_FEED_URL }}
           BSKY_IDENTIFIER: ${{ secrets.BSKY_IDENTIFIER }}
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          ANUBIS_COOKIE_FILE: .cache/anubis-cookies.json
           # Les lancements planifiés publient pour de vrai ; les lancements manuels
           # suivent la case "dry_run" (cochée par défaut).
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
