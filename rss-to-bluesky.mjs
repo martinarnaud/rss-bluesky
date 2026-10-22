@@ -18,6 +18,7 @@ import Parser from "rss-parser";
 import atproto from "@atproto/api";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { fetchWithAnubis } from "./anubis.mjs";
 
 const { RichText } = atproto;
 const Agent = atproto.AtpAgent ?? atproto.BskyAgent;
@@ -134,15 +135,14 @@ const MAX_DUMP_CHARS = 50000;
 
 // Télécharge le flux une seule fois : le texte reçu sert à la fois à l'analyse
 // et, en cas d'échec, à l'affichage du contenu brut.
+// Si le site est protégé par Anubis, le défi de calcul est relevé (voir anubis.mjs).
 async function fetchFeedText(url) {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "rss-to-bluesky/1.0",
-      "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
-    },
-    signal: AbortSignal.timeout(20000),
+  return fetchWithAnubis(url, {
+    userAgent: "rss-to-bluesky/1.0",
+    accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+    cookieFile: process.env.ANUBIS_COOKIE_FILE, // optionnel : réutilise le cookie d'un passage à l'autre
+    log: (msg) => console.log(maskUrl(msg)),
   });
-  return { res, body: await res.text() };
 }
 
 // Affiche dans les logs ce que le serveur a réellement renvoyé.
