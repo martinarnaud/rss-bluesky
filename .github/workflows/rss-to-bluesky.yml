@@ -2,7 +2,7 @@ name: RSS vers Bluesky
 
 on:
   schedule:
-    - cron: "*/30 * * * *" # toutes les 30 minutes (heure UTC ; GitHub peut retarder de quelques minutes)
+    - cron: "7,37 * * * *" # toutes les 30 minutes (heure UTC ; GitHub peut retarder de quelques minutes)
   workflow_dispatch:       # lancement manuel depuis l'onglet Actions
     inputs:
       dry_run:
