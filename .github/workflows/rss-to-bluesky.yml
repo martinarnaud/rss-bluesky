@@ -1,0 +1,56 @@
+name: RSS vers Bluesky
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # toutes les 30 minutes (heure UTC ; GitHub peut retarder de quelques minutes)
+  workflow_dispatch:       # lancement manuel depuis l'onglet Actions
+    inputs:
+      dry_run:
+        description: "Test à blanc : affiche les posts sans rien publier"
+        type: boolean
+        default: true
+
+# Évite que deux exécutions se chevauchent (risque de doublons)
+concurrency:
+  group: rss-to-bluesky
+  cancel-in-progress: false
+
+permissions:
+  contents: write # nécessaire pour enregistrer state.json
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Publier les nouveaux items
+        env:
+          SEENTHIS_FEED_URL: ${{ secrets.SEENTHIS_FEED_URL }}
+          BSKY_IDENTIFIER: ${{ secrets.BSKY_IDENTIFIER }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          # Les lancements planifiés publient pour de vrai ; les lancements manuels
+          # suivent la case "dry_run" (cochée par défaut).
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
+        run: node rss-to-bluesky.mjs
+
+      # S'exécute même si la publication a échoué, pour ne pas perdre les items déjà publiés
+      - name: Enregistrer l'état
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Mise à jour de l'état"
+            git pull --rebase
+            git push
+          fi
