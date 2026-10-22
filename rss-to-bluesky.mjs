@@ -90,7 +90,11 @@ function itemTs(item) {
 
 // Texte à publier : à ajuster selon ce que contient votre flux Seenthis.
 function itemSummary(item) {
-  return (item.contentSnippet ?? item.summary ?? item.title ?? "").trim();
+  const text = (item.contentSnippet ?? item.summary ?? item.title ?? "")
+    // Seenthis place une flèche « ▻ » devant les liens : on la supprime pour que
+    // l'adresse qui suit soit reconnue comme un lien par Bluesky.
+    .replaceAll("▻", "");
+  return text.trim();
 }
 
 // ---------- État (state.json, versionné dans le dépôt) ----------
