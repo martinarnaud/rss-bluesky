@@ -1,0 +1,216 @@
+#!/usr/bin/env node
+// Surveille un flux RSS (Seenthis) et publie les nouveaux items sur Bluesky.
+// Conçu pour tourner dans GitHub Actions (voir .github/workflows/rss-to-bluesky.yml).
+//
+// Variables d'environnement (à définir comme Secrets du dépôt) :
+//   SEENTHIS_FEED_URL   adresse du flux RSS
+//   BSKY_IDENTIFIER     votre handle, ex. arno-spip.bsky.social
+//   BSKY_APP_PASSWORD   mot de passe d'APPLICATION Bluesky (pas le mot de passe du compte)
+//
+// Options :
+//   DRY_RUN=1           affiche ce qui serait publié, sans rien publier ni enregistrer
+//   STATE_FILE=...      chemin du fichier d'état (défaut : ./state.json)
+//
+// Le dépôt étant public, rien de sensible ne doit être écrit dans state.json
+// ni dans les logs : l'adresse du flux n'y apparaît jamais.
+
+import Parser from "rss-parser";
+import atproto from "@atproto/api";
+import { createHash } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+
+const { RichText } = atproto;
+const Agent = atproto.AtpAgent ?? atproto.BskyAgent;
+
+// ---------- Configuration ----------
+const FEED_URL = process.env.SEENTHIS_FEED_URL;
+const STATE_FILE = process.env.STATE_FILE ?? "state.json";
+const DRY_RUN = process.env.DRY_RUN === "1";
+
+// Au tout premier lancement, seuls les items des dernières 24 h sont publiés
+// (comme "Published After" dans Pipedream). Les plus anciens sont ignorés.
+const FIRST_RUN_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+const DELAY_BETWEEN_POSTS_MS = 2000;
+const MAX_STATE_ENTRIES = 1000;
+
+const BSKY_MAX_GRAPHEMES = 300;
+const ELLIPSIS = "…";
+const SEPARATOR = "\n\n";
+
+// ---------- Texte du post (votre logique Pipedream) ----------
+function smartTruncate(text, maxLength) {
+  if (maxLength <= 0) return "";
+  const graphemes = [...text];
+  if (graphemes.length <= maxLength) return text;
+
+  const truncated = graphemes.slice(0, maxLength - ELLIPSIS.length).join("");
+  const lastNewline = truncated.lastIndexOf("\n");
+  const lastSpace = truncated.lastIndexOf(" ");
+
+  let cutPoint;
+  if (lastNewline > truncated.length * 0.7) cutPoint = lastNewline;
+  else if (lastSpace > 0) cutPoint = lastSpace;
+  else cutPoint = truncated.length;
+
+  return truncated.substring(0, cutPoint).replace(/\s+$/, "") + ELLIPSIS;
+}
+
+function buildPostText(summary, link) {
+  const reserved = [...link].length + [...SEPARATOR].length;
+  const available = BSKY_MAX_GRAPHEMES - reserved;
+  if (available <= 0) throw new Error(`Lien trop long pour un post Bluesky : ${link}`);
+  const clean = smartTruncate(summary, available).replace(/\s+$/, "");
+  return `${clean}${SEPARATOR}${link}`;
+}
+
+async function postToBluesky(agent, summary, link) {
+  const rt = new RichText({ text: buildPostText(summary, link) });
+  await rt.detectFacets(agent);
+  return agent.post({
+    text: rt.text,
+    facets: rt.facets,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+// ---------- Logique RSS (équivalent de itemKey / itemTs) ----------
+function itemKey(item) {
+  const id = item.guid ?? item.id ?? item.link ?? item.title;
+  const base = id
+    ? (id.length > 64 ? id.slice(-64) : id)
+    : JSON.stringify(item);
+  // On stocke un hash court plutôt que l'identifiant brut.
+  return createHash("sha1").update(base).digest("hex").slice(0, 20);
+}
+
+function itemTs(item) {
+  const d = item.isoDate ?? item.pubDate;
+  return d ? +new Date(d) : Date.now();
+}
+
+// Texte à publier : à ajuster selon ce que contient votre flux Seenthis.
+function itemSummary(item) {
+  return (item.contentSnippet ?? item.summary ?? item.title ?? "").trim();
+}
+
+// ---------- État (state.json, versionné dans le dépôt) ----------
+async function loadState() {
+  try {
+    const s = JSON.parse(await readFile(STATE_FILE, "utf8"));
+    return { seen: s.seen ?? {}, keepalive: s.keepalive };
+  } catch {
+    return { seen: {} };
+  }
+}
+
+async function saveState(state) {
+  // Marqueur mensuel : garantit au moins un commit par mois, pour que GitHub
+  // ne désactive pas le workflow planifié d'un dépôt public inactif.
+  state.keepalive = new Date().toISOString().slice(0, 7);
+
+  // Limite la taille du fichier : on garde les entrées les plus récentes.
+  const entries = Object.entries(state.seen);
+  if (entries.length > MAX_STATE_ENTRIES) {
+    entries.sort((a, b) => b[1] - a[1]);
+    state.seen = Object.fromEntries(entries.slice(0, MAX_STATE_ENTRIES));
+  }
+  // Clés triées : diffs stables, pas de commit inutile.
+  const sorted = Object.fromEntries(Object.entries(state.seen).sort(([a], [b]) => a.localeCompare(b)));
+  await writeFile(
+    STATE_FILE,
+    JSON.stringify({ keepalive: state.keepalive, seen: sorted }, null, 2) + "\n",
+  );
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const normalizeUrl = (u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`);
+
+async function main() {
+  if (!FEED_URL) {
+    throw new Error("SEENTHIS_FEED_URL n'est pas défini (Secret du dépôt ou variable d'environnement).");
+  }
+
+  const state = await loadState();
+  const isFirstRun = Object.keys(state.seen).length === 0;
+  const cutoff = Date.now() - FIRST_RUN_LOOKBACK_MS;
+  const parser = new Parser({
+    timeout: 20000,
+    headers: { "User-Agent": "rss-to-bluesky/1.0" },
+  });
+
+  // 1. Récupérer les nouveaux items
+  let feed;
+  try {
+    feed = await parser.parseURL(normalizeUrl(FEED_URL));
+  } catch (err) {
+    // Le message ne doit pas exposer l'adresse du flux (logs publics).
+    throw new Error(`Impossible de lire le flux : ${String(err.message).replaceAll(FEED_URL, "[URL du flux]")}`);
+  }
+
+  const toPost = [];
+  const items = [...feed.items].sort((a, b) => itemTs(a) - itemTs(b)); // du plus ancien au plus récent
+  for (const item of items) {
+    const key = itemKey(item);
+    if (state.seen[key]) continue;
+    if (isFirstRun && itemTs(item) < cutoff) {
+      state.seen[key] = Date.now(); // marqué comme vu, jamais publié
+      continue;
+    }
+    toPost.push({ key, item });
+  }
+
+  if (toPost.length === 0) {
+    if (!DRY_RUN) await saveState(state);
+    console.log("Rien de nouveau.");
+    return;
+  }
+
+  // 2. Publier sur Bluesky
+  let agent = null;
+  if (!DRY_RUN) {
+    const { BSKY_IDENTIFIER, BSKY_APP_PASSWORD } = process.env;
+    if (!BSKY_IDENTIFIER || !BSKY_APP_PASSWORD) {
+      throw new Error("BSKY_IDENTIFIER et BSKY_APP_PASSWORD doivent être définis.");
+    }
+    agent = new Agent({ service: "https://bsky.social" });
+    await agent.login({ identifier: BSKY_IDENTIFIER, password: BSKY_APP_PASSWORD });
+  }
+
+  let failed = false;
+  for (const { key, item } of toPost) {
+    const summary = itemSummary(item);
+    const link = item.link;
+    if (!summary || !link) {
+      console.warn(`Item ignoré (résumé ou lien manquant) : ${item.title ?? key}`);
+      state.seen[key] = Date.now();
+      continue;
+    }
+
+    if (DRY_RUN) {
+      console.log(`[DRY_RUN] Publierait :\n${buildPostText(summary, link)}\n---`);
+      continue;
+    }
+
+    try {
+      await postToBluesky(agent, summary, link);
+      state.seen[key] = Date.now();
+      console.log(`Publié : ${item.title ?? link}`);
+      await sleep(DELAY_BETWEEN_POSTS_MS);
+    } catch (err) {
+      // Pas marqué comme vu : sera retenté au prochain passage.
+      // On s'arrête là pour conserver l'ordre chronologique des publications.
+      console.error(`Échec de publication (${link}) : ${err.message}`);
+      failed = true;
+      break;
+    }
+  }
+
+  if (!DRY_RUN) await saveState(state);
+  if (failed) process.exit(1);
+}
+
+main().catch((err) => {
+  console.error(err.message ?? err);
+  process.exit(1);
+});
