@@ -63,14 +63,65 @@ function buildPostText(summary, link) {
   return `${clean}${SEPARATOR}${link}`;
 }
 
-async function postToBluesky(agent, summary, link) {
+async function postToBluesky(agent, summary, link, embed) {
   const rt = new RichText({ text: buildPostText(summary, link) });
   await rt.detectFacets(agent);
   return agent.post({
     text: rt.text,
     facets: rt.facets,
+    ...(embed ? { embed } : {}),
     createdAt: new Date().toISOString(),
   });
+}
+
+// ---------- Carte YouTube ----------
+// Bluesky affiche une « carte » (titre, vignette, lecteur intégré dans l'application)
+// quand le post contient un lien externe attaché sous forme d'embed. Il faut la construire
+// nous-mêmes : Bluesky ne la génère pas à partir du texte.
+const YOUTUBE_RE = /https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?[^\s"'<>]*?v=|shorts\/|live\/|embed\/)|youtu\.be\/)[\w-]{6,}[^\s"'<>]*/i;
+const YOUTUBE_OEMBED = process.env.YOUTUBE_OEMBED_URL ?? "https://www.youtube.com/oembed";
+const MAX_THUMB_BYTES = 950000; // Bluesky refuse les vignettes de plus d'environ 1 Mo
+
+function findYouTubeUrl(item) {
+  const haystack = [item.content, item["content:encoded"], item.contentSnippet, item.summary]
+    .filter(Boolean)
+    .join(" ")
+    .replaceAll("&amp;", "&");
+  const m = haystack.match(YOUTUBE_RE);
+  return m ? m[0].replace(/[.,;:!?)\]]+$/, "") : null;
+}
+
+async function buildYouTubeEmbed(agent, url) {
+  const headers = { "User-Agent": "rss-to-bluesky/1.0" };
+  const res = await fetch(`${YOUTUBE_OEMBED}?${new URLSearchParams({ url, format: "json" })}`, {
+    headers,
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`oEmbed HTTP ${res.status}`);
+  const meta = await res.json();
+
+  let thumb;
+  if (meta.thumbnail_url) {
+    const img = await fetch(meta.thumbnail_url, { headers, signal: AbortSignal.timeout(15000) });
+    if (img.ok) {
+      const bytes = Buffer.from(await img.arrayBuffer());
+      if (bytes.length > 0 && bytes.length <= MAX_THUMB_BYTES) {
+        const mime = (img.headers.get("content-type") ?? "image/jpeg").split(";")[0];
+        const uploaded = await agent.uploadBlob(bytes, { encoding: mime });
+        thumb = uploaded.data.blob;
+      }
+    }
+  }
+
+  return {
+    $type: "app.bsky.embed.external",
+    external: {
+      uri: url,
+      title: meta.title ?? url,
+      description: meta.author_name ? `YouTube · ${meta.author_name}` : "YouTube",
+      ...(thumb ? { thumb } : {}),
+    },
+  };
 }
 
 // ---------- Logique RSS (équivalent de itemKey / itemTs) ----------
@@ -234,13 +285,26 @@ async function main() {
       continue;
     }
 
+    const youtubeUrl = findYouTubeUrl(item);
+
     if (DRY_RUN) {
-      console.log(`[DRY_RUN] Publierait :\n${buildPostText(summary, link)}\n---`);
+      console.log(`[DRY_RUN] Publierait :\n${buildPostText(summary, link)}`);
+      if (youtubeUrl) console.log(`[DRY_RUN] + carte YouTube : ${youtubeUrl}`);
+      console.log("---");
       continue;
     }
 
     try {
-      await postToBluesky(agent, summary, link);
+      // Carte YouTube : si elle ne peut pas être construite, on publie quand même, sans carte.
+      let embed;
+      if (youtubeUrl) {
+        try {
+          embed = await buildYouTubeEmbed(agent, youtubeUrl);
+        } catch (err) {
+          console.warn(`Carte YouTube impossible (${err.message}) : publication sans carte.`);
+        }
+      }
+      await postToBluesky(agent, summary, link, embed);
       state.seen[key] = Date.now();
       console.log(`Publié : ${item.title ?? link}`);
       await sleep(DELAY_BETWEEN_POSTS_MS);
