@@ -1,3 +1,5 @@
+[![RSS vers Bluesky](https://github.com/martinarnaud/rss-bluesky/actions/workflows/rss-to-bluesky.yml/badge.svg?branch=main)](https://github.com/martinarnaud/rss-bluesky/actions/workflows/rss-to-bluesky.yml)
+
 # RSS vers Bluesky
 
 Publie sur Bluesky les nouveaux items d'un flux RSS (Seenthis), toutes les 30 minutes, via GitHub Actions.
