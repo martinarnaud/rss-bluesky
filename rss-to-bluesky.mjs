@@ -126,6 +126,42 @@ async function saveState(state) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const normalizeUrl = (u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`);
 
+// L'adresse du flux ne doit jamais apparaître dans les logs (dépôt public).
+const maskUrl = (s) => String(s).replaceAll(FEED_URL, "[URL du flux]");
+
+// Taille maximale du contenu affiché en cas d'échec (évite des logs démesurés).
+const MAX_DUMP_CHARS = 50000;
+
+// Télécharge le flux une seule fois : le texte reçu sert à la fois à l'analyse
+// et, en cas d'échec, à l'affichage du contenu brut.
+async function fetchFeedText(url) {
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "rss-to-bluesky/1.0",
+      "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  return { res, body: await res.text() };
+}
+
+// Affiche dans les logs ce que le serveur a réellement renvoyé.
+function dumpResponse(res, body) {
+  const hints = [];
+  if (/anubis/i.test(body)) hints.push("la page mentionne Anubis");
+  if (/<(rss|feed|rdf:RDF)[\s>]/i.test(body)) hints.push("ressemble à un flux");
+  else if (/<html/i.test(body)) hints.push("c'est une page HTML, pas un flux");
+
+  console.error(`Réponse reçue : HTTP ${res.status}, type "${res.headers.get("content-type")}", ${body.length} caractères.`);
+  if (hints.length) console.error(`Indices : ${hints.join(" ; ")}.`);
+  console.error("----- DÉBUT DU CONTENU REÇU -----");
+  console.error(maskUrl(body.length > MAX_DUMP_CHARS ? body.slice(0, MAX_DUMP_CHARS) : body));
+  if (body.length > MAX_DUMP_CHARS) {
+    console.error(`[... tronqué : ${body.length - MAX_DUMP_CHARS} caractères supplémentaires ...]`);
+  }
+  console.error("----- FIN DU CONTENU REÇU -----");
+}
+
 async function main() {
   if (!FEED_URL) {
     throw new Error("SEENTHIS_FEED_URL n'est pas défini (Secret du dépôt ou variable d'environnement).");
@@ -140,12 +176,21 @@ async function main() {
   });
 
   // 1. Récupérer les nouveaux items
+  let res;
+  let body;
+  try {
+    ({ res, body } = await fetchFeedText(normalizeUrl(FEED_URL)));
+  } catch (err) {
+    throw new Error(`Impossible de télécharger le flux : ${maskUrl(err.message)}`);
+  }
+
   let feed;
   try {
-    feed = await parser.parseURL(normalizeUrl(FEED_URL));
+    if (!res.ok) throw new Error(`le serveur a répondu HTTP ${res.status}`);
+    feed = await parser.parseString(body);
   } catch (err) {
-    // Le message ne doit pas exposer l'adresse du flux (logs publics).
-    throw new Error(`Impossible de lire le flux : ${String(err.message).replaceAll(FEED_URL, "[URL du flux]")}`);
+    dumpResponse(res, body); // affiche le contenu brut reçu, avant le message d'erreur
+    throw new Error(`Impossible de lire le flux : ${maskUrl(err.message)}`);
   }
 
   const toPost = [];
