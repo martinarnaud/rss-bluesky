@@ -174,6 +174,29 @@ async function fetchImage(imageUrl, pageUrl) {
 
 // ---------- Interface publique ----------
 
+/** Vrai si l'adresse se termine par une extension d'image (jpg, jpeg, png, gif), hors paramètres. */
+export function isImageUrl(url) {
+  try {
+    return /\.(jpe?g|png|gif)$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Embed « images » pour un lien direct vers une image. Les GIF sont publiés tels quels mais
+ * s'affichent figés : Bluesky ne conserve pas l'animation dans ce type d'embed.
+ * Lève une erreur si l'image est trop lourde ou illisible.
+ */
+export async function buildImageEmbed(agent, url, alt) {
+  const image = await fetchImage(url, url);
+  const uploaded = await agent.uploadBlob(image.bytes, { encoding: image.mime });
+  return {
+    $type: "app.bsky.embed.images",
+    images: [{ alt: alt ?? "", image: uploaded.data.blob }],
+  };
+}
+
 /** Lit titre, description et image de la page. Lève une erreur si aucune carte n'est possible. */
 export async function fetchLinkMeta(url) {
   const { res, finalUrl, buf } = await safeFetch(url, {

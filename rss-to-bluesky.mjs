@@ -19,7 +19,7 @@ import { AtpAgent, RichText } from "@atproto/api";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fetchWithAnubis } from "./anubis.mjs";
-import { buildLinkCard, fetchLinkMeta, findExternalUrl } from "./og-card.mjs";
+import { buildImageEmbed, buildLinkCard, fetchLinkMeta, findExternalUrl, isImageUrl } from "./og-card.mjs";
 
 
 // ---------- Configuration ----------
@@ -286,15 +286,18 @@ async function main() {
       continue;
     }
 
-    // Une seule carte par post : YouTube en priorité (lecteur intégré), sinon le premier
-    // lien externe du message, avec ses métadonnées Open Graph.
+    // Un seul embed par post : YouTube en priorité (lecteur intégré), sinon le premier lien
+    // externe du message : l'image elle-même si c'est un lien direct vers une image, sinon
+    // une carte avec ses métadonnées Open Graph.
     const youtubeUrl = findYouTubeUrl(item);
     const cardUrl = youtubeUrl ? null : findExternalUrl(item, link);
 
     if (DRY_RUN) {
       console.log(`[DRY_RUN] Publierait :\n${buildPostText(summary, link)}`);
       if (youtubeUrl) console.log(`[DRY_RUN] + carte YouTube : ${youtubeUrl}`);
-      if (cardUrl) {
+      if (cardUrl && isImageUrl(cardUrl)) {
+        console.log(`[DRY_RUN] + image intégrée : ${cardUrl}`);
+      } else if (cardUrl) {
         try {
           const m = await fetchLinkMeta(cardUrl);
           console.log(`[DRY_RUN] + carte de lien : ${cardUrl}`);
@@ -317,6 +320,12 @@ async function main() {
           embed = await buildYouTubeEmbed(agent, youtubeUrl);
         } catch (err) {
           console.warn(`Carte YouTube impossible (${err.message}) : publication sans carte.`);
+        }
+      } else if (cardUrl && isImageUrl(cardUrl)) {
+        try {
+          embed = await buildImageEmbed(agent, cardUrl, item.title ?? summary);
+        } catch (err) {
+          console.warn(`Image impossible pour ${cardUrl} (${err.message}) : publication sans image.`);
         }
       } else if (cardUrl) {
         try {
