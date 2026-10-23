@@ -2,7 +2,7 @@ name: RSS vers Bluesky
 
 on:
   schedule:
-    - cron: "12,42 * * * *" # toutes les 30 minutes (heure UTC ; GitHub peut retarder de quelques minutes)
+    - cron: "*/30 * * * *" # toutes les 30 minutes (heure UTC ; GitHub peut retarder de quelques minutes)
   workflow_dispatch:       # lancement manuel depuis l'onglet Actions
     inputs:
       dry_run:
@@ -53,14 +53,7 @@ jobs:
         run: node rss-to-bluesky.mjs
 
       # S'exécute même si la publication a échoué, pour ne pas perdre les items déjà publiés
+      # (save-state.sh fusionne avec la version du dépôt en cas de conflit, puis réessaie)
       - name: Enregistrer l'état
         if: always()
-        run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git commit -m "Mise à jour de l'état"
-            git pull --rebase
-            git push
-          fi
+        run: bash save-state.sh
