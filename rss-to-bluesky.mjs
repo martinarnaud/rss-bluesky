@@ -19,6 +19,7 @@ import { AtpAgent, RichText } from "@atproto/api";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fetchWithAnubis } from "./anubis.mjs";
+import { buildLinkCard, fetchLinkMeta, findExternalUrl } from "./og-card.mjs";
 
 
 // ---------- Configuration ----------
@@ -285,23 +286,43 @@ async function main() {
       continue;
     }
 
+    // Une seule carte par post : YouTube en priorité (lecteur intégré), sinon le premier
+    // lien externe du message, avec ses métadonnées Open Graph.
     const youtubeUrl = findYouTubeUrl(item);
+    const cardUrl = youtubeUrl ? null : findExternalUrl(item, link);
 
     if (DRY_RUN) {
       console.log(`[DRY_RUN] Publierait :\n${buildPostText(summary, link)}`);
       if (youtubeUrl) console.log(`[DRY_RUN] + carte YouTube : ${youtubeUrl}`);
+      if (cardUrl) {
+        try {
+          const m = await fetchLinkMeta(cardUrl);
+          console.log(`[DRY_RUN] + carte de lien : ${cardUrl}`);
+          console.log(`            titre       : ${m.title}`);
+          console.log(`            description : ${m.description || "(aucune)"}`);
+          console.log(`            vignette    : ${m.image ? `oui (${m.image.mime}, ${m.image.bytes.length} octets)` : m.hasImageTag ? `non (${m.imageProblem})` : "non (pas d'image dans la page)"}`);
+        } catch (err) {
+          console.log(`[DRY_RUN] carte de lien impossible pour ${cardUrl} : ${err.message}`);
+        }
+      }
       console.log("---");
       continue;
     }
 
     try {
-      // Carte YouTube : si elle ne peut pas être construite, on publie quand même, sans carte.
+      // Carte : si elle ne peut pas être construite, on publie quand même, sans carte.
       let embed;
       if (youtubeUrl) {
         try {
           embed = await buildYouTubeEmbed(agent, youtubeUrl);
         } catch (err) {
           console.warn(`Carte YouTube impossible (${err.message}) : publication sans carte.`);
+        }
+      } else if (cardUrl) {
+        try {
+          embed = await buildLinkCard(agent, cardUrl);
+        } catch (err) {
+          console.warn(`Carte de lien impossible pour ${cardUrl} (${err.message}) : publication sans carte.`);
         }
       }
       await postToBluesky(agent, summary, link, embed);

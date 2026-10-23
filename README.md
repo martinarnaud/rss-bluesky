@@ -1,5 +1,3 @@
-[![RSS vers Bluesky](https://github.com/martinarnaud/rss-bluesky/actions/workflows/rss-to-bluesky.yml/badge.svg?branch=main)](https://github.com/martinarnaud/rss-bluesky/actions/workflows/rss-to-bluesky.yml)
-
 # RSS vers Bluesky
 
 Publie sur Bluesky les nouveaux items d'un flux RSS (Seenthis), toutes les 30 minutes, via GitHub Actions.
@@ -30,6 +28,18 @@ demandé (preuve de travail SHA-256, algorithme « fast »), comme le ferait un 
 - Le cookie obtenu est conservé dans le cache GitHub Actions (jamais dans le dépôt) pour éviter de refaire le calcul
   à chaque passage, s'il reste valable.
 - Il suppose que l'administrateur du site accepte ce type d'accès pour votre usage. Si ce n'est pas le cas, ne l'utilisez pas.
+
+## Cartes de lien
+
+Chaque post peut recevoir une « carte » (titre, description, vignette) :
+- **YouTube** : carte construite via l'API oEmbed de YouTube (le lecteur est ensuite géré par l'application Bluesky).
+- **Autres sites** : le premier lien externe du message (ni Seenthis, ni le site du message lui-même) est ouvert,
+  et ses balises Open Graph (`og:title`, `og:description`, `og:image`, avec repli sur `twitter:*` et `<title>`) servent à la carte.
+  Implémenté dans `og-card.mjs`.
+
+Si la carte ne peut pas être construite (site injoignable, page sans titre, image trop lourde, défi anti-robots...),
+le post est publié quand même, sans carte ou sans vignette. Le test à blanc affiche un aperçu de chaque carte.
+Seuls les sites publics sont ouverts (pas de localhost ni d'adresses privées).
 
 ## À savoir
 
