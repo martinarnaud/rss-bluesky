@@ -69,7 +69,12 @@ function buildPostText(summary, link) {
 function stripUrl(text, url) {
   if (!url) return text;
   const same = (candidate) => {
-    const cleaned = decodeEntities(candidate).replace(/[.,;:!?)\]»]+$/, "");
+    // Seenthis abrège les longues adresses affichées (« https://site/chemin… ») :
+    // une adresse tronquée qui est le début de celle de la carte est la même.
+    const decoded = decodeEntities(candidate);
+    const truncated = /(?:…|\.\.\.)$/.test(decoded);
+    const cleaned = decoded.replace(/(?:…|\.\.\.)$/, "").replace(/[.,;:!?)\]»]+$/, "");
+    if (truncated) return cleaned.length > 8 && url.startsWith(cleaned);
     if (cleaned === url) return true;
     try {
       return new URL(cleaned).href === url;
