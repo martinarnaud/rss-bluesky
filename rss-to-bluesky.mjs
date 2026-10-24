@@ -44,7 +44,14 @@ function smartTruncate(text, maxLength) {
   const graphemes = [...text];
   if (graphemes.length <= maxLength) return text;
 
-  const truncated = graphemes.slice(0, maxLength - ELLIPSIS.length).join("");
+  let truncated = graphemes.slice(0, maxLength - ELLIPSIS.length).join("");
+  // Une adresse coupée en deux serait un lien cassé : on coupe plutôt juste avant.
+  for (const m of text.matchAll(/https?:\/\/\S+/g)) {
+    if (m.index > 0 && m.index < truncated.length && m.index + m[0].length > truncated.length) {
+      truncated = truncated.slice(0, m.index);
+      break;
+    }
+  }
   const lastNewline = truncated.lastIndexOf("\n");
   const lastSpace = truncated.lastIndexOf(" ");
 
@@ -166,12 +173,50 @@ function itemTs(item) {
   return d ? +new Date(d) : Date.now();
 }
 
+// Convertit le HTML du message en texte brut. Les citations (<blockquote>) sont marquées
+// par un « > » en début de ligne, Bluesky n'offrant aucune mise en forme.
+function htmlToText(html) {
+  const convert = (h) => {
+    let t = h
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
+      // Liens vers un site externe : l'adresse complète (le texte affiché est abrégé).
+      // La flèche « ► » qui les précède pointe vers la fiche du site sur Seenthis : on l'ignore.
+      .replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (m, attrs, inner) => {
+        const href = attrs.match(/href\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+        const plain = decodeEntities(inner.replace(/<[^>]*>/g, "")).trim();
+        if (/^[►▻]$/.test(plain)) return "";
+        if (href && /spip_out|lien_court/.test(attrs + inner)) return decodeEntities(href[1] ?? href[2]);
+        return inner;
+      })
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|h[1-6])\s*>/gi, "\n\n");
+    return t;
+  };
+  const quoted = (h) =>
+    "\n\n" +
+    htmlToText(h)
+      .split("\n")
+      .map((l) => (l.trim() ? `> ${l.trim()}` : ">"))
+      .join("\n") +
+    "\n\n";
+
+  let text = convert(html).replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote\s*>/gi, (m, inner) => quoted(inner));
+  text = decodeEntities(text.replace(/<[^>]*>/g, ""))
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+}
+
 // Texte à publier : à ajuster selon ce que contient votre flux Seenthis.
 function itemSummary(item) {
-  const text = (item.contentSnippet ?? item.summary ?? item.title ?? "")
-    // Seenthis place une flèche « ▻ » devant les liens : on la supprime pour que
-    // l'adresse qui suit soit reconnue comme un lien par Bluesky.
-    .replaceAll("▻", "");
+  const html = item.content ?? item["content:encoded"];
+  const text = html
+    ? htmlToText(html)
+    : (item.contentSnippet ?? item.summary ?? item.title ?? "")
+        // Seenthis place une flèche « ▻ » devant les liens : on la supprime pour que
+        // l'adresse qui suit soit reconnue comme un lien par Bluesky.
+        .replaceAll("▻", "");
   return text.trim();
 }
 
