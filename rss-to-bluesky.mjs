@@ -19,7 +19,7 @@ import { AtpAgent, RichText } from "@atproto/api";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fetchWithAnubis } from "./anubis.mjs";
-import { buildImageEmbed, buildLinkCard, fetchLinkMeta, findExternalUrl, isImageUrl } from "./og-card.mjs";
+import { buildImageEmbed, buildLinkCard, decodeEntities, fetchLinkMeta, findExternalUrl, isImageUrl } from "./og-card.mjs";
 
 
 // ---------- Configuration ----------
@@ -62,6 +62,27 @@ function buildPostText(summary, link) {
   if (available <= 0) throw new Error(`Lien trop long pour un post Bluesky : ${link}`);
   const clean = smartTruncate(summary, available).replace(/\s+$/, "");
   return `${clean}${SEPARATOR}${link}`;
+}
+
+// Quand une carte (ou une image) est attachée, l'adresse affichée dans le texte devient
+// redondante : on la retire pour gagner des caractères.
+function stripUrl(text, url) {
+  if (!url) return text;
+  const same = (candidate) => {
+    const cleaned = decodeEntities(candidate).replace(/[.,;:!?)\]»]+$/, "");
+    if (cleaned === url) return true;
+    try {
+      return new URL(cleaned).href === url;
+    } catch {
+      return false;
+    }
+  };
+  return text
+    .replace(/https?:\/\/[^\s"'<>]+/g, (m) => (same(m) ? "" : m))
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 async function postToBluesky(agent, summary, link, embed) {
@@ -278,7 +299,7 @@ async function main() {
 
   let failed = false;
   for (const { key, item } of toPost) {
-    const summary = itemSummary(item);
+    let summary = itemSummary(item);
     const link = item.link;
     if (!summary || !link) {
       console.warn(`Item ignoré (résumé ou lien manquant) : ${item.title ?? key}`);
@@ -292,8 +313,12 @@ async function main() {
     const youtubeUrl = findYouTubeUrl(item);
     const cardUrl = youtubeUrl ? null : findExternalUrl(item, link);
 
+    // Le texte n'est dépouillé de l'adresse que si la carte est effectivement attachée.
+    const withoutUrl = (u) => stripUrl(summary, u) || summary;
+
     if (DRY_RUN) {
-      console.log(`[DRY_RUN] Publierait :\n${buildPostText(summary, link)}`);
+      console.log(`[DRY_RUN] Publierait :\n${buildPostText(withoutUrl(youtubeUrl ?? cardUrl), link)}`);
+      console.log("[DRY_RUN] (adresse retirée du texte seulement si la carte est construite)");
       if (youtubeUrl) console.log(`[DRY_RUN] + carte YouTube : ${youtubeUrl}`);
       if (cardUrl && isImageUrl(cardUrl)) {
         console.log(`[DRY_RUN] + image intégrée : ${cardUrl}`);
@@ -334,6 +359,7 @@ async function main() {
           console.warn(`Carte de lien impossible pour ${cardUrl} (${err.message}) : publication sans carte.`);
         }
       }
+      if (embed) summary = withoutUrl(youtubeUrl ?? cardUrl);
       await postToBluesky(agent, summary, link, embed);
       state.seen[key] = Date.now();
       console.log(`Publié : ${item.title ?? link}`);
