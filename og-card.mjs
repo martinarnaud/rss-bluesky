@@ -149,7 +149,7 @@ export function parseMetadata(html) {
     description: clean(first("og:description", "twitter:description", "description")),
     image: first("og:image", "og:image:secure_url", "og:image:url", "twitter:image", "twitter:image:src")?.trim(),
     hasChallenge: /id=["']anubis_challenge["']/i.test(html) ||
-      /^(just a moment|attention required|making sure you.?re not a bot|access denied|are you a robot|verifying you are human|vérification)/i.test(clean(titleTag ?? "")),
+      /^(just a moment|attention required|making sure you.?re not a bot|access denied|are you a robot|verifying you are human|vérification|client challenge|security check|please wait|checking your browser|one moment|bot verification|captcha|human verification)/i.test(clean(titleTag ?? "")),
   };
 }
 
